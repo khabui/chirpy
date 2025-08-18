@@ -9,16 +9,20 @@ func main() {
 	// 1. Create a new http.ServeMux
 	mux := http.NewServeMux()
 
-	// 2. Create a new http.Server struct.
-	// We'll pass our mux to the server as its handler.
+	// 2. Use a standard http.FileServer as the handler and http.Dir to set the root directory
+	// The path `.` represents the current directory.
+	fs := http.FileServer(http.Dir("."))
+
+	// 3. Use the http.NewServeMux's .Handle() method to add a handler for the root path (`/`).
+	mux.Handle("/", fs)
+
+	// 4. Create and start the server
 	server := &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
 	}
 
-	// 3. Use the server's ListenAndServe method to start the server.
-	// This is a blocking call, so the program will stay running here.
-	log.Println("Server starting on :8080...")
+	log.Println("Fileserver starting on :8080...")
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed to start: %v", err)
 	}
