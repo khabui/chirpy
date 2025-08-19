@@ -5,24 +5,35 @@ import (
 	"net/http"
 )
 
+// healthzHandler handles requests to the /healthz endpoint
+func healthzHandler(w http.ResponseWriter, r *http.Request) {
+	// Set the Content-Type header
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	// Write the status code
+	w.WriteHeader(http.StatusOK)
+
+	// Write the body text
+	w.Write([]byte(http.StatusText(http.StatusOK)))
+}
+
 func main() {
-	// 1. Create a new http.ServeMux
 	mux := http.NewServeMux()
 
-	// 2. Use a standard http.FileServer as the handler and http.Dir to set the root directory
-	// The path `.` represents the current directory.
-	fs := http.FileServer(http.Dir("."))
+	// 1. Add the Readiness Endpoint
+	mux.HandleFunc("/healthz", healthzHandler)
 
-	// 3. Use the http.NewServeMux's .Handle() method to add a handler for the root path (`/`).
-	mux.Handle("/", fs)
+	// 2. Update the Fileserver Path
+	// Strip the /app/ prefix from the request before serving the file
+	fsHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
+	mux.Handle("/app/", fsHandler)
 
-	// 4. Create and start the server
 	server := &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
 	}
 
-	log.Println("Fileserver starting on :8080...")
+	log.Println("Server starting on :8080...")
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed to start: %v", err)
 	}
