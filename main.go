@@ -55,12 +55,10 @@ func main() {
 	mux := http.NewServeMux()
 	apiCfg := &apiConfig{}
 
-	// Update the following paths to only accept GET requests
-	mux.HandleFunc("GET /healthz", healthzHandler)
-	mux.HandleFunc("GET /metrics", apiCfg.metricsHandler)
-
-	// Update the /reset endpoint to only accept POST requests
-	mux.HandleFunc("POST /reset", apiCfg.resetHandler)
+	// Move API endpoints to the /api namespace
+	mux.HandleFunc("GET /api/healthz", healthzHandler)
+	mux.HandleFunc("GET /api/metrics", apiCfg.metricsHandler)
+	mux.HandleFunc("POST /api/reset", apiCfg.resetHandler)
 
 	// Create the fileserver handler and wrap it with the middleware.
 	fsHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
