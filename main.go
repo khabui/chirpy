@@ -53,20 +53,18 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	mux := http.NewServeMux()
-
-	// Initialize our apiConfig struct
 	apiCfg := &apiConfig{}
 
-	// --- Existing Handlers ---
-	mux.HandleFunc("/healthz", healthzHandler)
+	// Update the following paths to only accept GET requests
+	mux.HandleFunc("GET /healthz", healthzHandler)
+	mux.HandleFunc("GET /metrics", apiCfg.metricsHandler)
+
+	// Update the /reset endpoint to only accept POST requests
+	mux.HandleFunc("POST /reset", apiCfg.resetHandler)
 
 	// Create the fileserver handler and wrap it with the middleware.
 	fsHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(fsHandler))
-
-	// --- New Stateful Handlers ---
-	mux.HandleFunc("/metrics", apiCfg.metricsHandler)
-	mux.HandleFunc("/reset", apiCfg.resetHandler)
 
 	server := &http.Server{
 		Addr:    ":8080",
