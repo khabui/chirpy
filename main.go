@@ -3,7 +3,41 @@ package main
 import (
 	"log"
 	"net/http"
+	"strconv"
+	"sync/atomic"
 )
+
+// apiConfig holds our server's state, including the fileserver hit count.
+type apiConfig struct {
+	fileserverHits atomic.Int32
+}
+
+// middlewareMetricsInc is a middleware that increments the fileserverHits counter.
+func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg.fileserverHits.Add(1)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// metricsHandler writes the current hit count to the response.
+func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
+	hits := cfg.fileserverHits.Load()
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	// Convert the integer to a string using strconv.Itoa()
+	w.Write([]byte("Hits: " + strconv.Itoa(int(hits))))
+}
+
+// resetHandler resets the fileserverHits counter to zero.
+func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	cfg.fileserverHits.Store(0)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
 
 // healthzHandler handles requests to the /healthz endpoint
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
@@ -20,13 +54,19 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	mux := http.NewServeMux()
 
-	// 1. Add the Readiness Endpoint
+	// Initialize our apiConfig struct
+	apiCfg := &apiConfig{}
+
+	// --- Existing Handlers ---
 	mux.HandleFunc("/healthz", healthzHandler)
 
-	// 2. Update the Fileserver Path
-	// Strip the /app/ prefix from the request before serving the file
+	// Create the fileserver handler and wrap it with the middleware.
 	fsHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
-	mux.Handle("/app/", fsHandler)
+	mux.Handle("/app/", apiCfg.middlewareMetricsInc(fsHandler))
+
+	// --- New Stateful Handlers ---
+	mux.HandleFunc("/metrics", apiCfg.metricsHandler)
+	mux.HandleFunc("/reset", apiCfg.resetHandler)
 
 	server := &http.Server{
 		Addr:    ":8080",
