@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -39,6 +40,23 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+// adminMetricsHandler returns an HTML page with the hit count.
+func (cfg *apiConfig) adminMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	hits := cfg.fileserverHits.Load()
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	// Use fmt.Sprintf to format the HTML string with the hit count
+	html := fmt.Sprintf(`<html>
+	<body>
+	  <h1>Welcome, Chirpy Admin</h1>
+	  <p>Chirpy has been visited %d times!</p>
+	</body>
+</html>`, hits)
+	w.Write([]byte(html))
+}
+
 // healthzHandler handles requests to the /healthz endpoint
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	// Set the Content-Type header
@@ -55,12 +73,15 @@ func main() {
 	mux := http.NewServeMux()
 	apiCfg := &apiConfig{}
 
-	// Move API endpoints to the /api namespace
+	// API endpoints
 	mux.HandleFunc("GET /api/healthz", healthzHandler)
 	mux.HandleFunc("GET /api/metrics", apiCfg.metricsHandler)
-	mux.HandleFunc("POST /api/reset", apiCfg.resetHandler)
 
-	// Create the fileserver handler and wrap it with the middleware.
+	// Admin endpoints
+	mux.HandleFunc("GET /admin/metrics", apiCfg.adminMetricsHandler)
+	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
+
+	// Fileserver remains at the /app/ path
 	fsHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(fsHandler))
 
