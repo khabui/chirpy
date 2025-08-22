@@ -1,0 +1,6 @@
+// output files/directories
+internal/
+out
+
+// environment file
+.env

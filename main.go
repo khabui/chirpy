@@ -1,24 +1,40 @@
 package main
 
 import (
+	"chirpy/internal/database"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 // apiConfig holds our server's state, including the fileserver hit count.
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	DB             *database.Queries
+	Platform       string // New field for the PLATFORM environment variable
 }
 
 // chirpBody represents the expected JSON request body for a new chirp.
 type chirpBody struct {
 	Body string `json:"body"`
+}
+
+// createUserBody represents the expected JSON request body for a new user.
+type createUserBody struct {
+	Email string `json:"email"`
 }
 
 // errorResponse represents a generic JSON error response.
@@ -29,6 +45,14 @@ type errorResponse struct {
 // cleanChirpResponse represents a successful validation response with a cleaned body.
 type cleanChirpResponse struct {
 	CleanedBody string `json:"cleaned_body"`
+}
+
+// User represents the User data returned to the client.
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 // sanitizeChirp replaces profane words in a given string.
@@ -66,10 +90,24 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Hits: " + strconv.Itoa(int(hits))))
 }
 
-// resetHandler resets the fileserverHits counter to zero.
+// resetHandler resets the fileserverHits counter to zero and deletes all users if in dev.
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if cfg.Platform != "dev" {
+		respondWithError(w, http.StatusForbidden, "Forbidden: This endpoint is only available in the 'dev' environment")
+		return
+	}
+
+	// Delete all users from the database
+	err := cfg.DB.DeleteUsers(context.Background())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to delete users")
+		return
+	}
+
+	// Reset fileserver hits
 	cfg.fileserverHits.Store(0)
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
@@ -89,6 +127,44 @@ func (cfg *apiConfig) adminMetricsHandler(w http.ResponseWriter, r *http.Request
 	</body>
 </html>`, hits)
 	w.Write([]byte(html))
+}
+
+// createUserHandler creates a new user in the database.
+func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	var reqBody createUserBody
+
+	err := decoder.Decode(&reqBody)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// Generate a new UUID and get current time for timestamps
+	now := time.Now().UTC()
+	id := uuid.New()
+
+	// Call the generated SQLC function to create the user
+	dbUser, err := cfg.DB.CreateUser(context.Background(), database.CreateUserParams{
+		ID:        id,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Email:     reqBody.Email,
+	})
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create user")
+		return
+	}
+
+	// Map the database.User to the main package's User struct
+	user := User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+
+	respondWithJSON(w, http.StatusCreated, user)
 }
 
 // validateChirpHandler validates a chirp's length.
@@ -144,10 +220,37 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Load environment variables from .env file
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
+	// Get the DB_URL from environment variables
+	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		log.Fatal("DB_URL not found in environment variables")
+	}
+	platform := os.Getenv("PLATFORM")
+
+	// Open a connection to the database
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatalf("Error opening database connection: %v", err)
+	}
+	defer db.Close() // Defer closing the database connection
+
+	// Use the SQLC generated database package to create new queries
+	dbQueries := database.New(db)
+
 	mux := http.NewServeMux()
-	apiCfg := &apiConfig{}
+	apiCfg := &apiConfig{
+		DB:       dbQueries, // Store the dbQueries in the apiConfig struct
+		Platform: platform,
+	}
 
 	// API endpoints
+	mux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
 	mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 	mux.HandleFunc("GET /api/healthz", healthzHandler)
 	mux.HandleFunc("GET /api/metrics", apiCfg.metricsHandler)
