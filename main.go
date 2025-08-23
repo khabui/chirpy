@@ -27,9 +27,19 @@ type apiConfig struct {
 	Platform       string // New field for the PLATFORM environment variable
 }
 
-// chirpBody represents the expected JSON request body for a new chirp.
-type chirpBody struct {
-	Body string `json:"body"`
+// New `createChirpBody` struct for the incoming JSON
+type createChirpBody struct {
+	Body   string `json:"body"`
+	UserID string `json:"user_id"`
+}
+
+// New `Chirp` struct for the outgoing JSON response
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 // createUserBody represents the expected JSON request body for a new user.
@@ -40,11 +50,6 @@ type createUserBody struct {
 // errorResponse represents a generic JSON error response.
 type errorResponse struct {
 	Error string `json:"error"`
-}
-
-// cleanChirpResponse represents a successful validation response with a cleaned body.
-type cleanChirpResponse struct {
-	CleanedBody string `json:"cleaned_body"`
 }
 
 // User represents the User data returned to the client.
@@ -167,10 +172,9 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 	respondWithJSON(w, http.StatusCreated, user)
 }
 
-// validateChirpHandler validates a chirp's length.
-func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
-	var reqBody chirpBody
+	var reqBody createChirpBody
 
 	err := decoder.Decode(&reqBody)
 	if err != nil {
@@ -178,14 +182,44 @@ func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Port all logic from the old `validate_chirp` handler
 	if len(reqBody.Body) > 140 {
 		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
 		return
 	}
 
 	cleanedBody := sanitizeChirp(reqBody.Body)
+	now := time.Now().UTC()
+	id := uuid.New()
+	userID, err := uuid.Parse(reqBody.UserID)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid User ID")
+		return
+	}
 
-	respondWithJSON(w, http.StatusOK, cleanChirpResponse{CleanedBody: cleanedBody})
+	// Call the generated SQLC function to create the chirp
+	dbChirp, err := cfg.DB.CreateChirp(r.Context(), database.CreateChirpParams{
+		ID:        id,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Body:      cleanedBody,
+		UserID:    userID,
+	})
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create chirp")
+		return
+	}
+
+	// Map the database.Chirp to the main package's Chirp struct
+	chirp := Chirp{
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserID:    dbChirp.UserID,
+	}
+
+	respondWithJSON(w, http.StatusCreated, chirp)
 }
 
 // respondWithError is a helper function to send JSON error responses.
@@ -251,7 +285,7 @@ func main() {
 
 	// API endpoints
 	mux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
-	mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
+	mux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
 	mux.HandleFunc("GET /api/healthz", healthzHandler)
 	mux.HandleFunc("GET /api/metrics", apiCfg.metricsHandler)
 
