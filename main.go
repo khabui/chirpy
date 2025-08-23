@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"context"
 	"database/sql"
@@ -24,13 +25,27 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	DB             *database.Queries
-	Platform       string // New field for the PLATFORM environment variable
+	Platform       string
 }
 
-// New `createChirpBody` struct for the incoming JSON
-type createChirpBody struct {
-	Body   string `json:"body"`
-	UserID string `json:"user_id"`
+// User represents the User data returned to the client.
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
+// createUserBody represents the expected JSON request body for a new user.
+type createUserBody struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// loginBody represents the expected JSON request body for a login request.
+type loginBody struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 // New `Chirp` struct for the outgoing JSON response
@@ -42,22 +57,15 @@ type Chirp struct {
 	UserID    uuid.UUID `json:"user_id"`
 }
 
-// createUserBody represents the expected JSON request body for a new user.
-type createUserBody struct {
-	Email string `json:"email"`
+// New `createChirpBody` struct for the incoming JSON
+type createChirpBody struct {
+	Body   string `json:"body"`
+	UserID string `json:"user_id"`
 }
 
 // errorResponse represents a generic JSON error response.
 type errorResponse struct {
 	Error string `json:"error"`
-}
-
-// User represents the User data returned to the client.
-type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
 }
 
 // sanitizeChirp replaces profane words in a given string.
@@ -145,19 +153,58 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Generate a new UUID and get current time for timestamps
+	// Hash the password before storing it
+	hashedPassword, err := auth.HashPassword(reqBody.Password)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to hash password")
+		return
+	}
+
 	now := time.Now().UTC()
 	id := uuid.New()
 
-	// Call the generated SQLC function to create the user
-	dbUser, err := cfg.DB.CreateUser(context.Background(), database.CreateUserParams{
-		ID:        id,
-		CreatedAt: now,
-		UpdatedAt: now,
-		Email:     reqBody.Email,
+	dbUser, err := cfg.DB.CreateUser(r.Context(), database.CreateUserParams{
+		ID:             id,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		Email:          reqBody.Email,
+		HashedPassword: hashedPassword,
 	})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to create user")
+		return
+	}
+
+	user := User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+
+	respondWithJSON(w, http.StatusCreated, user)
+}
+
+func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	var reqBody loginBody
+
+	err := decoder.Decode(&reqBody)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	dbUser, err := cfg.DB.GetUserByEmail(r.Context(), reqBody.Email)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+		return
+	}
+
+	// Use bcrypt to check the password hash
+	err = auth.CheckPasswordHash(reqBody.Password, dbUser.HashedPassword)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 		return
 	}
 
@@ -169,7 +216,7 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 		Email:     dbUser.Email,
 	}
 
-	respondWithJSON(w, http.StatusCreated, user)
+	respondWithJSON(w, http.StatusOK, user)
 }
 
 func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
@@ -340,6 +387,7 @@ func main() {
 
 	// API endpoints
 	mux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
+	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 	mux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)

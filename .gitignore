@@ -1,5 +1,5 @@
 // output files/directories
-internal/
+internal/database/
 out
 
 // environment file
