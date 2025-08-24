@@ -38,6 +38,16 @@ type User struct {
 	Token     string    `json:"token"`
 }
 
+// UserWithTokens represents the User data returned after successful login.
+type UserWithTokens struct {
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
+}
+
 // createUserBody represents the expected JSON request body for a new user.
 type createUserBody struct {
 	Email    string `json:"email"`
@@ -225,16 +235,88 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Map the database.User to the main package's User struct
-	user := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
-		Token:     jwtString,
+	// Create Refresh Token with 60-day expiration
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create refresh token")
+		return
 	}
 
-	respondWithJSON(w, http.StatusOK, user)
+	refreshTokenExpiresAt := time.Now().UTC().Add(time.Hour * 24 * 60)
+	now := time.Now().UTC()
+
+	// Store the refresh token in the database
+	_, err = cfg.DB.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token:     refreshToken,
+		CreatedAt: now,
+		UpdatedAt: now,
+		UserID:    dbUser.ID,
+		ExpiresAt: refreshTokenExpiresAt,
+	})
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to save refresh token")
+		return
+	}
+
+	userWithTokens := UserWithTokens{
+		ID:           dbUser.ID,
+		CreatedAt:    dbUser.CreatedAt,
+		UpdatedAt:    dbUser.UpdatedAt,
+		Email:        dbUser.Email,
+		Token:        jwtString,
+		RefreshToken: refreshToken,
+	}
+
+	respondWithJSON(w, http.StatusOK, userWithTokens)
+}
+
+// refreshHandler generates a new access token from a valid refresh token.
+func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Couldn't find refresh token in headers")
+		return
+	}
+
+	dbUser, err := cfg.DB.GetUserFromRefreshToken(r.Context(), tokenString)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Invalid, expired, or revoked refresh token")
+		return
+	}
+
+	// Create a new JWT with a 1-hour expiration
+	newJWT, err := auth.MakeJWT(dbUser.ID, cfg.JWTSecret, time.Hour)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create new JWT")
+		return
+	}
+
+	// Respond with the new access token
+	response := struct {
+		Token string `json:"token"`
+	}{
+		Token: newJWT,
+	}
+	respondWithJSON(w, http.StatusOK, response)
+}
+
+// revokeHandler revokes a refresh token.
+func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Couldn't find refresh token in headers")
+		return
+	}
+
+	// Revoke the token in the database
+	err = cfg.DB.RevokeRefreshToken(r.Context(), tokenString)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to revoke token")
+		return
+	}
+
+	// 204 No Content response
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
@@ -417,6 +499,8 @@ func main() {
 	// API endpoints
 	mux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
 	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
+	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
+	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
 	mux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)

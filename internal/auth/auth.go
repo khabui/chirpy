@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -10,6 +12,16 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// MakeRefreshToken generates a random 256-bit hex-encoded string.
+func MakeRefreshToken() (string, error) {
+	bytes := make([]byte, 32)
+	_, err := rand.Read(bytes)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
 
 var ErrNoAuthHeaderIncluded = errors.New("no authorization header included")
 
