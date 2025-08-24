@@ -491,6 +491,59 @@ func (cfg *apiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, chirp)
 }
 
+func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Authenticate the user with the JWT
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT")
+		return
+	}
+
+	authenticatedUserID, err := auth.ValidateJWT(tokenString, cfg.JWTSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Invalid JWT")
+		return
+	}
+
+	// 2. Get the chirp ID from the URL path
+	chirpIDStr := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+		return
+	}
+
+	// 3. Get the chirp from the database to check ownership
+	dbChirp, err := cfg.DB.GetChirpForDeletion(r.Context(), chirpID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondWithError(w, http.StatusNotFound, "Chirp not found")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve chirp")
+		return
+	}
+
+	// 4. Check if the authenticated user is the owner of the chirp
+	if dbChirp.UserID != authenticatedUserID {
+		respondWithError(w, http.StatusForbidden, "You do not have permission to delete this chirp")
+		return
+	}
+
+	// 5. Delete the chirp
+	err = cfg.DB.DeleteChirp(r.Context(), database.DeleteChirpParams{
+		ID:     chirpID,
+		UserID: authenticatedUserID,
+	})
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to delete chirp")
+		return
+	}
+
+	// 6. Respond with a 204 status
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // respondWithError is a helper function to send JSON error responses.
 func respondWithError(w http.ResponseWriter, code int, msg string) {
 	respondWithJSON(w, code, errorResponse{Error: msg})
@@ -534,8 +587,16 @@ func main() {
 	if dbURL == "" {
 		log.Fatal("DB_URL not found in environment variables")
 	}
+
 	platform := os.Getenv("PLATFORM")
+	if platform == "" {
+		log.Fatal("PLATFORM must be set")
+	}
+
 	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET environment variable is not set")
+	}
 
 	// Open a connection to the database
 	db, err := sql.Open("postgres", dbURL)
@@ -563,6 +624,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpHandler)
 	mux.HandleFunc("GET /api/healthz", healthzHandler)
 	mux.HandleFunc("GET /api/metrics", apiCfg.metricsHandler)
 
