@@ -26,6 +26,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	DB             *database.Queries
 	Platform       string
+	JWTSecret      string
 }
 
 // User represents the User data returned to the client.
@@ -34,6 +35,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 // createUserBody represents the expected JSON request body for a new user.
@@ -44,8 +46,9 @@ type createUserBody struct {
 
 // loginBody represents the expected JSON request body for a login request.
 type loginBody struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email            string `json:"email"`
+	Password         string `json:"password"`
+	ExpiresInSeconds *int   `json:"expires_in_seconds"`
 }
 
 // New `Chirp` struct for the outgoing JSON response
@@ -59,8 +62,7 @@ type Chirp struct {
 
 // New `createChirpBody` struct for the incoming JSON
 type createChirpBody struct {
-	Body   string `json:"body"`
-	UserID string `json:"user_id"`
+	Body string `json:"body"`
 }
 
 // errorResponse represents a generic JSON error response.
@@ -208,28 +210,58 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine the expiration time
+	expiresIn := time.Hour
+	if reqBody.ExpiresInSeconds != nil {
+		if *reqBody.ExpiresInSeconds <= 3600 {
+			expiresIn = time.Duration(*reqBody.ExpiresInSeconds) * time.Second
+		}
+	}
+
+	// Create the JWT
+	jwtString, err := auth.MakeJWT(dbUser.ID, cfg.JWTSecret, expiresIn)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create JWT")
+		return
+	}
+
 	// Map the database.User to the main package's User struct
 	user := User{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
 		UpdatedAt: dbUser.UpdatedAt,
 		Email:     dbUser.Email,
+		Token:     jwtString,
 	}
 
 	respondWithJSON(w, http.StatusOK, user)
 }
 
 func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Get and validate JWT
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT")
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tokenString, cfg.JWTSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Invalid JWT")
+		return
+	}
+
+	// 2. Decode the request body (chirp content)
 	decoder := json.NewDecoder(r.Body)
 	var reqBody createChirpBody
 
-	err := decoder.Decode(&reqBody)
+	err = decoder.Decode(&reqBody)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
-	// Port all logic from the old `validate_chirp` handler
+	// 3. Perform length validation and sanitization
 	if len(reqBody.Body) > 140 {
 		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
 		return
@@ -238,13 +270,8 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 	cleanedBody := sanitizeChirp(reqBody.Body)
 	now := time.Now().UTC()
 	id := uuid.New()
-	userID, err := uuid.Parse(reqBody.UserID)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid User ID")
-		return
-	}
 
-	// Call the generated SQLC function to create the chirp
+	// 4. Create the chirp in the database using the authenticated user ID
 	dbChirp, err := cfg.DB.CreateChirp(r.Context(), database.CreateChirpParams{
 		ID:        id,
 		CreatedAt: now,
@@ -368,6 +395,7 @@ func main() {
 		log.Fatal("DB_URL not found in environment variables")
 	}
 	platform := os.Getenv("PLATFORM")
+	jwtSecret := os.Getenv("JWT_SECRET")
 
 	// Open a connection to the database
 	db, err := sql.Open("postgres", dbURL)
@@ -381,8 +409,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	apiCfg := &apiConfig{
-		DB:       dbQueries, // Store the dbQueries in the apiConfig struct
-		Platform: platform,
+		DB:        dbQueries, // Store the dbQueries in the apiConfig struct
+		Platform:  platform,
+		JWTSecret: jwtSecret,
 	}
 
 	// API endpoints

@@ -1,12 +1,32 @@
 package auth
 
 import (
+	"errors"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
+
+var ErrNoAuthHeaderIncluded = errors.New("no authorization header included")
+
+// GetBearerToken extracts the bearer token string from the Authorization header.
+func GetBearerToken(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", ErrNoAuthHeaderIncluded
+	}
+
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		return "", errors.New("malformed authorization header")
+	}
+
+	return parts[1], nil
+}
 
 // MakeJWT creates and signs a new JWT.
 func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
