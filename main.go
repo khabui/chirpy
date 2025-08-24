@@ -31,11 +31,11 @@ type apiConfig struct {
 
 // User represents the User data returned to the client.
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 // UserWithTokens represents the User data returned after successful login.
@@ -44,6 +44,7 @@ type UserWithTokens struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	Email        string    `json:"email"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
 }
@@ -193,10 +194,11 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	user := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
+		ID:          dbUser.ID,
+		CreatedAt:   dbUser.CreatedAt,
+		UpdatedAt:   dbUser.UpdatedAt,
+		Email:       dbUser.Email,
+		IsChirpyRed: dbUser.IsChirpyRed,
 	}
 
 	respondWithJSON(w, http.StatusCreated, user)
@@ -246,10 +248,11 @@ func (cfg *apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request) 
 
 	// 5. Respond with the updated user resource (without the password)
 	user := User{
-		ID:        updatedUser.ID,
-		CreatedAt: updatedUser.CreatedAt,
-		UpdatedAt: updatedUser.UpdatedAt,
-		Email:     updatedUser.Email,
+		ID:          updatedUser.ID,
+		CreatedAt:   updatedUser.CreatedAt,
+		UpdatedAt:   updatedUser.UpdatedAt,
+		Email:       updatedUser.Email,
+		IsChirpyRed: updatedUser.IsChirpyRed,
 	}
 
 	respondWithJSON(w, http.StatusOK, user)
@@ -321,6 +324,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    dbUser.CreatedAt,
 		UpdatedAt:    dbUser.UpdatedAt,
 		Email:        dbUser.Email,
+		IsChirpyRed:  dbUser.IsChirpyRed,
 		Token:        jwtString,
 		RefreshToken: refreshToken,
 	}
@@ -625,6 +629,7 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpHandler)
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.webhookHandler)
 	mux.HandleFunc("GET /api/healthz", healthzHandler)
 	mux.HandleFunc("GET /api/metrics", apiCfg.metricsHandler)
 
