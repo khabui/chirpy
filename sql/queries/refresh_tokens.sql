@@ -3,6 +3,9 @@ INSERT INTO refresh_tokens (token, created_at, updated_at, user_id, expires_at)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
+-- name: DeleteRefreshTokens :exec
+DELETE FROM refresh_tokens;
+
 -- name: GetUserFromRefreshToken :one
 SELECT * FROM users
 JOIN refresh_tokens ON users.id = refresh_tokens.user_id

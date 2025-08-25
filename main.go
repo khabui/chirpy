@@ -3,7 +3,6 @@ package main
 import (
 	"chirpy/internal/auth"
 	"chirpy/internal/database"
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -27,6 +26,7 @@ type apiConfig struct {
 	DB             *database.Queries
 	Platform       string
 	JWTSecret      string
+	PolkaKey       string
 }
 
 // User represents the User data returned to the client.
@@ -128,8 +128,21 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete all users from the database
-	err := cfg.DB.DeleteUsers(context.Background())
+	// Delete all chirps and refresh tokens first to satisfy foreign key constraints
+	err := cfg.DB.DeleteChirps(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to delete chirps")
+		return
+	}
+
+	err = cfg.DB.DeleteRefreshTokens(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to delete refresh tokens")
+		return
+	}
+
+	// Then, delete all users
+	err = cfg.DB.DeleteUsers(r.Context())
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to delete users")
 		return
@@ -602,6 +615,11 @@ func main() {
 		log.Fatal("JWT_SECRET environment variable is not set")
 	}
 
+	polkaKey := os.Getenv("POLKA_KEY")
+	if polkaKey == "" {
+		log.Fatal("POLKA_KEY must be set")
+	}
+
 	// Open a connection to the database
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -614,9 +632,10 @@ func main() {
 
 	mux := http.NewServeMux()
 	apiCfg := &apiConfig{
-		DB:        dbQueries, // Store the dbQueries in the apiConfig struct
+		DB:        dbQueries,
 		Platform:  platform,
 		JWTSecret: jwtSecret,
+		PolkaKey:  polkaKey,
 	}
 
 	// API endpoints

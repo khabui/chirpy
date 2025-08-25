@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"database/sql"
 	"encoding/json"
 	"log"
@@ -17,10 +18,22 @@ type webhookBody struct {
 }
 
 func (cfg *apiConfig) webhookHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Get and validate the API key
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Couldn't find API key")
+		return
+	}
+
+	if apiKey != cfg.PolkaKey {
+		respondWithError(w, http.StatusUnauthorized, "Invalid API key")
+		return
+	}
+
 	decoder := json.NewDecoder(r.Body)
 	var reqBody webhookBody
 
-	err := decoder.Decode(&reqBody)
+	err = decoder.Decode(&reqBody)
 	if err != nil {
 		log.Printf("Error decoding webhook body: %v", err)
 		w.WriteHeader(http.StatusBadRequest)
